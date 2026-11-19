@@ -1,0 +1,436 @@
+import discord
+from discord.ext import commands
+import json, asyncio
+from datetime import datetime, timedelta
+
+TOKEN = "Sm-IB7nuEfT_GeiMpy_sJ54XN4ITKczq"
+DEINE_USER_ID = 
+SUPPORT_ROLLEN_NAME = "Support"
+
+intents = 【entity-discord¦canonical_name=discord】.Intents.all()
+bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
+
+RANKS = ["Owner","Co-Owner","Head Admin","Admin","Head Moderator","Moderator","Trial Moderator","Supporter","Trial Supporter"]
+
+RANK_REQ = {
+    "Trial Supporter": "Bewerbung angenommen, 0 Warns",
+    "Supporter": "7 Tage Trial Supporter, max 1 Warn",
+    "Trial Moderator": "14 Tage Supporter, max 1 Warn, aktiv",
+    "Moderator": "14 Tage Trial Mod, 0 Warns in Probezeit",
+    "Head Moderator": "30 Tage Moderator, sehr aktiv",
+    "Admin": "Nur durch Owner / Co-Owner",
+    "Head Admin": "Nur durch Owner",
+    "Co-Owner": "Nur durch Owner",
+    "Owner": "Hoechster Rang",
+}
+
+try:
+    with open("team_data.json", "r") as f:
+        db = json.load(f)
+except:
+    db = {"warns": {}, "history": {}, "team": {}, "bewerbungen": {}}
+
+def save():
+    with open("team_data.json", "w") as f:
+        json.dump(db, f, indent=2)
+
+def get_rank_index(member):
+    for i, rank_name in enumerate(RANKS):
+        role = discord.utils.get(member.roles, name=rank_name)
+        if role:
+            return i
+    return 999
+
+def get_rank_name(member):
+    idx = get_rank_index(member)
+    return RANKS[idx] if idx != 999 else "Kein Team"
+
+def add_history(user_id, text):
+    uid = str(user_id)
+    if uid not in db["history"]:
+        db["history"][uid] = []
+    db["history"][uid].append(f"[{datetime.now().strftime('%d.%m.%Y %H:%M')}] {text}")
+    save()
+
+async def send_log(guild, title, description, color=0x5865F2):
+    channel = discord.utils.get(guild.text_channels, name="team-logs")
+    if not channel:
+        return
+    embed = discord.Embed(title=title, description=description, color=color, timestamp=datetime.now())
+    await channel.send(embed=embed)
+
+class TicketView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+    @discord.ui.button(label="Ticket erstellen", style=discord.ButtonStyle.green, custom_id="create_ticket")
+    async def create_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = interaction.guild
+        for ch in guild.text_channels:
+            if ch.topic == f"Ticket von {interaction.user.id}":
+                return await interaction.response.send_message(f"Du hast schon ein Ticket: {ch.mention}", ephemeral=True)
+        support_role = discord.utils.get(guild.roles, name=SUPPORT_ROLLEN_NAME)
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(read_messages=False),
+            interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+            guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+        }
+        if support_role:
+            overwrites[support_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+        channel = await guild.create_text_channel(name=f"ticket-{interaction.user.name}", overwrites=overwrites, topic=f"Ticket von {interaction.user.id}")
+        embed = discord.Embed(title="Support Ticket", description=f"Hallo {interaction.user.mention}! Beschreibe dein Problem.", color=0x00ff00)
+        await channel.send(f"{support_role.mention if support_role else ''} {interaction.user.mention}", embed=embed, view=TicketControlView())
+        await interaction.response.send_message(f"Ticket erstellt: {channel.mention}", ephemeral=True)
+
+class TicketControlView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+    @discord.ui.button(label="Claimen", style=discord.ButtonStyle.blurple, custom_id="claim_ticket")
+    async def claim(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(f"{interaction.user.mention} hat das Ticket uebernommen!")
+    @discord.ui.button(label="Schliessen", style=discord.ButtonStyle.red, custom_id="close_ticket")
+    async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("Ticket wird in 5 Sek geschlossen...")
+        await asyncio.sleep(5)
+        await interaction.channel.delete(reason=f"Ticket geschlossen von {interaction.user}")
+
+@bot.event
+async def on_ready():
+    print(f"Online als {bot.user}")
+    bot.add_view(TicketView())
+    bot.add_view(TicketControlView())
+    await bot.tree.sync()
+    await bot.change_presence(activity=【entity-discord¦canonical_name=discord】.Game(name="/help | Team Bot"))
+
+@bot.event
+async def on_guild_join(guild):
+    for channel in guild.text_channels:
+        try:
+            embed = 【entity-discord¦canonical_name=discord】.Embed(title="Danke fuers Einladen!", description="Ich bin der Team & Rank Bot!", color=0x5865F2)
+            embed.add_field(name="1. Schritt", value="Ein Admin muss /setup eingeben", inline=False)
+            embed.add_field(name="2. Schritt", value="Dann /team-add, /warn, /uprank nutzen", inline=False)
+            await channel.send(embed=embed)
+            break
+        except:
+            continue
+
+@bot.tree.command(name="setup", description="Richtet den Bot auf diesem Server ein")
+async def setup(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        return await interaction.response.send_message("Nur Admins!", ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+    for rank in RANKS:
+        if not discord.utils.get(guild.roles, name=rank):
+            await guild.create_role(name=rank)
+    if not discord.utils.get(guild.text_channels, name="team-logs"):
+        await guild.create_text_channel("team-logs")
+    if not discord.utils.get(guild.text_channels, name="bewerbungen"):
+        await guild.create_text_channel("bewerbungen")
+    if not discord.utils.get(guild.text_channels, name="support"):
+        await guild.create_text_channel("support")
+    owner_role = discord.utils.get(guild.roles, name="Owner")
+    if owner_role and owner_role not in guild.owner.roles:
+        await guild.owner.add_roles(owner_role)
+    await interaction.followup.send("SETUP FERTIG!")
+
+@bot.tree.command(name="uprank", description="Befoerdert ein Teammitglied")
+async def uprank(interaction: discord.Interaction, member: discord.Member, grund: str = "Gute Arbeit"):
+    author_idx = get_rank_index(interaction.user)
+    target_idx = get_rank_index(member)
+    if author_idx == 999:
+        return await interaction.response.send_message("Du bist kein Teammitglied!", ephemeral=True)
+    if target_idx == 999:
+        return await interaction.response.send_message("User ist nicht im Team! /team-add nutzen", ephemeral=True)
+    if author_idx >= target_idx:
+        return await interaction.response.send_message("Du kannst nur Leute UNTER dir befoerdern!", ephemeral=True)
+    if target_idx == 0:
+        return await interaction.response.send_message("Hoeher geht nicht mehr!", ephemeral=True)
+    new_rank = RANKS[target_idx - 1]
+    old_rank = RANKS[target_idx]
+    old_role = discord.utils.get(interaction.guild.roles, name=old_rank)
+    new_role = discord.utils.get(interaction.guild.roles, name=new_rank)
+    if old_role: await member.remove_roles(old_role)
+    if new_role: await member.add_roles(new_role)
+    add_history(member.id, f"UPRANK: {old_rank} -> {new_rank} | Von: {interaction.user} | Grund: {grund}")
+    await send_log(interaction.guild, "UP-RANK", f"{member.mention} befoerdert! Von: {old_rank} Zu: {new_rank} Von: {interaction.user.mention} Grund: {grund}", 0x00ff00)
+    await interaction.response.send_message(f"{member.mention} befoerdert: {old_rank} -> {new_rank} | Grund: {grund}")
+
+@bot.tree.command(name="downrank", description="Degradiert ein Teammitglied")
+async def downrank(interaction: discord.Interaction, member: discord.Member, grund: str):
+    author_idx = get_rank_index(interaction.user)
+    target_idx = get_rank_index(member)
+    if author_idx == 999 or author_idx >= target_idx:
+        return await interaction.response.send_message("Darfst du nicht! Nur hoehere Raenge.", ephemeral=True)
+    if target_idx == len(RANKS)-1:
+        return await interaction.response.send_message("Niedriger geht nicht!", ephemeral=True)
+    new_rank = RANKS[target_idx + 1]
+    old_rank = RANKS[target_idx]
+    old_role = discord.utils.get(interaction.guild.roles, name=old_rank)
+    new_role = discord.utils.get(interaction.guild.roles, name=new_rank)
+    if old_role: await member.remove_roles(old_role)
+    if new_role: await member.add_roles(new_role)
+    add_history(member.id, f"DOWNRANK: {old_rank} -> {new_rank} | Von: {interaction.user} | Grund: {grund}")
+    await send_log(interaction.guild, "DOWN-RANK", f"{member.mention} degradiert! Von: {old_rank} Zu: {new_rank} Von: {interaction.user.mention} Grund: {grund}", 0xff0000)
+    await interaction.response.send_message(f"{member.mention} degradiert: {old_rank} -> {new_rank} | Grund: {grund}")
+
+@bot.tree.command(name="rankinfo", description="Zeigt Rang + Anforderungen")
+async def rankinfo(interaction: discord.Interaction, member: discord.Member = None):
+    member = member or interaction.user
+    rank = get_rank_name(member)
+    embed = discord.Embed(title=f"Rank von {member.name}", color=0x5865F2)
+    embed.add_field(name="Aktueller Rang", value=rank, inline=False)
+    embed.add_field(name="Anforderungen", value=RANK_REQ.get(rank, "Keine"), inline=False)
+    embed.add_field(name="Warns", value=len(db["warns"].get(str(member.id), [])))
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="rankhistory", description="Zeigt Rank-Historie")
+async def rankhistory(interaction: discord.Interaction, member: discord.Member = None):
+    member = member or interaction.user
+    hist = db["history"].get(str(member.id), [])
+    if not hist:
+        return await interaction.response.send_message(f"{member.mention} hat noch keine Historie.")
+    embed = discord.Embed(title=f"Historie von {member.name}", color=0x5865F2)
+    embed.description = "\n".join(hist[-10:])
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="rankreq", description="Zeigt alle Rank-Anforderungen")
+async def rankreq(interaction: discord.Interaction):
+    embed = discord.Embed(title="RANK-ANFORDERUNGEN", color=0x5865F2)
+    for rank in RANKS:
+        embed.add_field(name=rank, value=RANK_REQ[rank], inline=False)
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="warn", description="Warn vergeben")
+async def warn(interaction: discord.Interaction, member: discord.Member, grund: str):
+    uid = str(member.id)
+    if uid not in db["warns"]: db["warns"][uid] = []
+    db["warns"][uid].append({"grund": grund, "von": str(interaction.user), "datum": datetime.now().strftime("%d.%m.%Y %H:%M")})
+    save()
+    anzahl = len(db["warns"][uid])
+    add_history(member.id, f"WARN #{anzahl} | Von: {interaction.user} | Grund: {grund}")
+    await send_log(interaction.guild, "WARN", f"{member.mention} verwarnt! Grund: {grund} Von: {interaction.user.mention} Anzahl: {anzahl}/3", 0xffa500)
+    await interaction.response.send_message(f"{member.mention} verwarnt ({anzahl}/3) - Grund: {grund}")
+    if anzahl == 2:
+        await member.timeout(timedelta(minutes=30), reason="2 Warns")
+        await interaction.channel.send(f"{member.mention} hat 2 Warns -> 30 Min Timeout!")
+    if anzahl >= 3:
+        await member.timeout(timedelta(hours=24), reason="3 Warns")
+        await interaction.channel.send(f"{member.mention} hat 3 Warns -> 24h Timeout!")
+
+@bot.tree.command(name="unwarn", description="Warn entfernen")
+async def unwarn(interaction: discord.Interaction, member: discord.Member, nummer: int):
+    uid = str(member.id)
+    if uid not in db["warns"] or len(db["warns"][uid]) < nummer:
+        return await interaction.response.send_message("Diesen Warn gibt es nicht!", ephemeral=True)
+    geloescht = db["warns"][uid].pop(nummer-1)
+    save()
+    add_history(member.id, f"UNWARN: Warn #{nummer} entfernt von {interaction.user}")
+    await send_log(interaction.guild, "UNWARN", f"Warn #{nummer} von {member.mention} entfernt", 0x00ff00)
+    await interaction.response.send_message(f"Warn #{nummer} von {member.mention} entfernt.")
+
+@bot.tree.command(name="warns", description="Warn-Uebersicht")
+async def warns(interaction: discord.Interaction, member: discord.Member = None):
+    member = member or interaction.user
+    warns_list = db["warns"].get(str(member.id), [])
+    if not warns_list:
+        return await interaction.response.send_message(f"{member.mention} hat 0 Warns")
+    embed = discord.Embed(title=f"Warns von {member.name} ({len(warns_list)})", color=0xff0000)
+    for i, w in enumerate(warns_list, 1):
+        embed.add_field(name=f"#{i} - {w['datum']}", value=f"Grund: {w['grund']} Von: {w['von']}", inline=False)
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="warnlogs", description="Zeigt alle Warn-Logs")
+async def warnlogs(interaction: discord.Interaction):
+    embed = discord.Embed(title="WARN-LOGS", color=0xffa500)
+    text = ""
+    for uid, warns in db["warns"].items():
+        if warns:
+            member = interaction.guild.get_member(int(uid))
+            name = member.name if member else uid
+            text += f"{name}: {len(warns)} Warns\n"
+    embed.description = text if text else "Keine Warns vorhanden."
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="team-add", description="Fuegt jemanden zum Team hinzu")
+async def team_add(interaction: discord.Interaction, member: discord.Member, rang: str = "Trial Supporter"):
+    if rang not in RANKS:
+        return await interaction.response.send_message(f"Rang gibt es nicht!", ephemeral=True)
+    role = discord.utils.get(interaction.guild.roles, name=rang)
+    if role: await member.add_roles(role)
+    db["team"][str(member.id)] = {"rang": rang, "seit": datetime.now().strftime("%d.%m.%Y"), "aktiv": True, "pause": False}
+    save()
+    add_history(member.id, f"TEAM-JOIN als {rang} | Von: {interaction.user}")
+    await send_log(interaction.guild, "TEAM-JOIN", f"{member.mention} ist jetzt im Team! Rang: {rang}", 0x00ff00)
+    await interaction.response.send_message(f"{member.mention} ist jetzt {rang}!")
+
+@bot.tree.command(name="team-remove", description="Entfernt jemanden aus dem Team")
+async def team_remove(interaction: discord.Interaction, member: discord.Member, grund: str):
+    for rank in RANKS:
+        role = discord.utils.get(interaction.guild.roles, name=rank)
+        if role and role in member.roles:
+            await member.remove_roles(role)
+    if str(member.id) in db["team"]:
+        del db["team"][str(member.id)]
+    save()
+    add_history(member.id, f"TEAM-LEAVE | Von: {interaction.user} | Grund: {grund}")
+    await send_log(interaction.guild, "TEAM-LEAVE", f"{member.mention} aus Team entfernt! Grund: {grund}", 0xff0000)
+    await interaction.response.send_message(f"{member.mention} aus dem Team entfernt. Grund: {grund}")
+
+@bot.tree.command(name="team-list", description="Zeigt alle Teammitglieder")
+async def team_list(interaction: discord.Interaction):
+    embed = discord.Embed(title="TEAM-UEBERSICHT", color=0x5865F2)
+    for rank in RANKS:
+        role = discord.utils.get(interaction.guild.roles, name=rank)
+        if not role: continue
+        members = [m.mention for m in role.members]
+        if members:
+            embed.add_field(name=f"{rank} ({len(members)})", value=", ".join(members[:10]), inline=False)
+    if not embed.fields:
+        embed.description = "Noch kein Team vorhanden."
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="team-pause", description="Team-Pause eintragen")
+async def team_pause(interaction: discord.Interaction, member: discord.Member, tage: int, grund: str):
+    uid = str(member.id)
+    if uid in db["team"]:
+        db["team"][uid]["pause"] = True
+        save()
+    add_history(member.id, f"PAUSE fuer {tage} Tage | Grund: {grund}")
+    await send_log(interaction.guild, "TEAM-PAUSE", f"{member.mention} ist {tage} Tage in Pause. Grund: {grund}", 0xffff00)
+    await interaction.response.send_message(f"{member.mention} ist jetzt {tage} Tage in Pause.")
+
+@bot.tree.command(name="team-abmelden", description="Dich selbst abmelden")
+async def team_abmelden(interaction: discord.Interaction, tage: int, grund: str):
+    uid = str(interaction.user.id)
+    if uid in db["team"]:
+        db["team"][uid]["pause"] = True
+        save()
+    add_history(uid, f"SELBST-ABMELDUNG {tage} Tage | Grund: {grund}")
+    await send_log(interaction.guild, "ABMELDUNG", f"{interaction.user.mention} meldet sich fuer {tage} Tage ab.", 0xffff00)
+    await interaction.response.send_message(f"Du bist fuer {tage} Tage abgemeldet.", ephemeral=True)
+
+@bot.tree.command(name="team-stats", description="Team-Statistiken anzeigen")
+async def team_stats(interaction: discord.Interaction, member: discord.Member = None):
+    member = member or interaction.user
+    uid = str(member.id)
+    team_info = db["team"].get(uid, {})
+    embed = discord.Embed(title=f"STATS von {member.name}", color=0x5865F2)
+    embed.add_field(name="Rang", value=get_rank_name(member))
+    embed.add_field(name="Team seit", value=team_info.get("seit", "Unbekannt"))
+    embed.add_field(name="Warns", value=len(db["warns"].get(uid, [])))
+    embed.add_field(name="Status", value="Pause" if team_info.get("pause") else "Aktiv")
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="bewerben", description="Bewirb dich fuers Team")
+async def bewerben(interaction: discord.Interaction, rang: str, warum: str, erfahrung: str, alter: int):
+    channel = discord.utils.get(interaction.guild.text_channels, name="bewerbungen")
+    embed = discord.Embed(title=f"NEUE BEWERBUNG von {interaction.user.name}", color=0x5865F2)
+    embed.add_field(name="Wunsch-Rang", value=rang, inline=False)
+    embed.add_field(name="Alter", value=str(alter), inline=True)
+    embed.add_field(name="Warum?", value=warum, inline=False)
+    embed.add_field(name="Erfahrung", value=erfahrung, inline=False)
+    embed.add_field(name="User", value=interaction.user.mention, inline=False)
+    if channel:
+        await channel.send(embed=embed)
+    db["bewerbungen"][str(interaction.user.id)] = {"rang": rang, "warum": warum, "status": "Offen"}
+    save()
+    await interaction.response.send_message("Bewerbung abgeschickt!", ephemeral=True)
+
+@bot.tree.command(name="bewerbung-annehmen", description="Bewerbung annehmen")
+async def bewerbung_annehmen(interaction: discord.Interaction, member: discord.Member):
+    uid = str(member.id)
+    role = discord.utils.get(interaction.guild.roles, name="Trial Supporter")
+    if role: await member.add_roles(role)
+    db["team"][uid] = {"rang": "Trial Supporter", "seit": datetime.now().strftime("%d.%m.%Y"), "aktiv": True, "pause": False}
+    save()
+    await send_log(interaction.guild, "BEWERBUNG ANGENOMMEN", f"{member.mention} angenommen!", 0x00ff00)
+    await interaction.response.send_message(f"{member.mention} angenommen als Trial Supporter!")
+
+@bot.tree.command(name="bewerbung-ablehnen", description="Bewerbung ablehnen")
+async def bewerbung_ablehnen(interaction: discord.Interaction, member: discord.Member, grund: str):
+    db["bewerbungen"][str(member.id)] = {"status": "Abgelehnt", "grund": grund}
+    save()
+    await interaction.response.send_message(f"Bewerbung von {member.mention} abgelehnt. Grund: {grund}")
+
+@bot.tree.command(name="ticket-panel", description="Erstellt das Ticket-Panel")
+async def ticket_panel(interaction: discord.Interaction):
+    embed = discord.Embed(title="SUPPORT", description="Brauchst du Hilfe? Klick unten auf den Button!", color=0x5865F2)
+    await interaction.response.send_message(embed=embed, view=TicketView())
+
+@bot.tree.command(name="ticket-add", description="Fuegt User zum Ticket hinzu")
+async def ticket_add(interaction: discord.Interaction, member: discord.Member):
+    if "ticket-" not in interaction.channel.name:
+        return await interaction.response.send_message("Das geht nur in einem Ticket!", ephemeral=True)
+    await interaction.channel.set_permissions(member, read_messages=True, send_messages=True)
+    await interaction.response.send_message(f"{member.mention} wurde zum Ticket hinzugefuegt.")
+
+@bot.tree.command(name="ticket-close", description="Schliesst das Ticket")
+async def ticket_close(interaction: discord.Interaction):
+    if "ticket-" not in interaction.channel.name:
+        return await interaction.response.send_message("Das ist kein Ticket!", ephemeral=True)
+    await interaction.response.send_message("Ticket wird in 5 Sek geschlossen...")
+    await asyncio.sleep(5)
+    await interaction.channel.delete()
+
+@bot.tree.command(name="support", description="Pingt das Support-Team")
+async def support(interaction: discord.Interaction, grund: str):
+    role = discord.utils.get(interaction.guild.roles, name=SUPPORT_ROLLEN_NAME)
+    if role:
+        await interaction.response.send_message(f"{role.mention} {interaction.user.mention} braucht Hilfe: {grund}")
+    else:
+        await interaction.response.send_message(f"Es gibt noch keine Rolle namens '{SUPPORT_ROLLEN_NAME}'.")
+
+@bot.tree.command(name="kick", description="Kickt einen User")
+async def kick(interaction: discord.Interaction, member: discord.Member, grund: str = "Kein Grund"):
+    await member.kick(reason=grund)
+    await send_log(interaction.guild, "KICK", f"{member.mention} gekickt Grund: {grund}", 0xffa500)
+    await interaction.response.send_message(f"{member.mention} gekickt.")
+
+@bot.tree.command(name="ban", description="Bannt einen User")
+async def ban(interaction: discord.Interaction, member: discord.Member, grund: str = "Kein Grund"):
+    await member.ban(reason=grund)
+    await send_log(interaction.guild, "BAN", f"{member.mention} gebannt Grund: {grund}", 0xff0000)
+    await interaction.response.send_message(f"{member.mention} gebannt.")
+
+@bot.tree.command(name="unban", description="Entbannt einen User")
+async def unban(interaction: discord.Interaction, user_id: str):
+    user = await bot.fetch_user(int(user_id))
+    await interaction.guild.unban(user)
+    await interaction.response.send_message(f"{user.mention} entbannt.")
+
+@bot.tree.command(name="timeout", description="Timeout geben")
+async def timeout(interaction: discord.Interaction, member: discord.Member, minuten: int, grund: str = "Kein Grund"):
+    await member.timeout(timedelta(minutes=minuten), reason=grund)
+    await interaction.response.send_message(f"{member.mention} Timeout fuer {minuten} Min.")
+
+@bot.tree.command(name="untimeout", description="Timeout entfernen")
+async def untimeout(interaction: discord.Interaction, member: discord.Member):
+    await member.timeout(None)
+    await interaction.response.send_message(f"Timeout entfernt.")
+
+@bot.tree.command(name="clear", description="Nachrichten loeschen")
+async def clear(interaction: discord.Interaction, anzahl: int):
+    await interaction.channel.purge(limit=anzahl)
+    await interaction.response.send_message(f"{anzahl} Nachrichten geloescht!", ephemeral=True)
+
+@bot.tree.command(name="lock", description="Channel sperren")
+async def lock(interaction: 【entity-discord¦canonical_name=discord】.Interaction):
+    await interaction.channel.set_permissions(interaction.guild.default_role, send_messages=False)
+    await interaction.response.send_message("Channel gesperrt!")
+
+@bot.tree.command(name="unlock", description="Channel entsperren")
+async def unlock(interaction: discord.Interaction):
+    await interaction.channel.set_permissions(interaction.guild.default_role, send_messages=True)
+    await interaction.response.send_message("Channel entsperrt!")
+
+@bot.tree.command(name="shutdown", description="Bot herunterfahren - nur Owner")
+async def shutdown(interaction: discord.Interaction):
+    if interaction.user.id != DEINE_USER_ID:
+        return await interaction.response.send_message("Nur der Owner darf das!", ephemeral=True)
+    await interaction.response.send_message("Bot wird heruntergefahren...")
+    await bot.close()
+
+@bot.tree.command(name="help", description="Alle Befehle")
+async def help_cmd(interaction: discord.Interaction):
+    embed = discord.Embed(title="ALLES-KOENNER V4", color=0x5865F2)
+    embed.add_field(name="Rank", value="/uprank /downrank /rankinfo /rankhistory /rankreq", inline=False)
